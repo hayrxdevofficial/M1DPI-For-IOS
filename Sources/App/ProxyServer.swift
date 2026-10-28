@@ -45,6 +45,7 @@ final class ProxyConnection: Hashable {
     private var targetHost = ""
     private var targetPort: UInt16 = 443
     private var shouldFragment = false
+    private var isCONNECT = false
 
     init(connection: NWConnection, config: Config) {
         self.connection = connection
@@ -66,7 +67,7 @@ final class ProxyConnection: Hashable {
     private func readHeader() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { self.cleanup(); return }
+            if error != nil { self.cleanup(); return }
             if let data = data { self.headerBuffer.append(data) }
             if let headerEnd = self.findHeaderEnd(self.headerBuffer) {
                 let header = self.headerBuffer[..<headerEnd]
@@ -93,12 +94,13 @@ final class ProxyConnection: Hashable {
         let target = String(parts[1])
 
         if method == "CONNECT" {
+            isCONNECT = true
             let hp = target.split(separator: ":")
             targetHost = hp.first.map(String.init) ?? target
             if hp.count > 1 { targetPort = UInt16(hp[1]) ?? 443 }
 
-            // Проверяем, нужно ли резать этот сайт
             shouldFragment = config.domainHit(targetHost)
+            print("[M1DPI] CONNECT \(targetHost):\(targetPort) hit=\(shouldFragment)")
 
             guard connectRemote() else { cleanup(); return }
 
@@ -107,7 +109,25 @@ final class ProxyConnection: Hashable {
                 self?.pipeTunnel()
             })
         } else {
-            cleanup()
+            // ОБЫЧНЫЙ HTTP - форвардим как есть, без фрагментации
+            isCONNECT = false
+            var host = target
+            if let s = host.range(of: "://") { host = String(host[s.upperBound...]) }
+            if let slash = host.firstIndex(of: "/") { host = String(host[..<slash]) }
+            let hp = host.split(separator: ":")
+            targetHost = hp.first.map(String.init) ?? host
+            targetPort = hp.count > 1 ? (UInt16(hp[1]) ?? 80) : 80
+            
+            print("[M1DPI] HTTP \(method) \(targetHost):\(targetPort)")
+            
+            guard connectRemote() else { cleanup(); return }
+            
+            // Форвардим исходный запрос (уже прочитанный)
+            let leftover = headerBuffer.subdata(in: data.count..<headerBuffer.count)
+            if !leftover.isEmpty {
+                remote?.send(content: leftover, completion: .contentProcessed { _ in })
+            }
+            pipeTunnel()
         }
     }
 
@@ -141,7 +161,7 @@ final class ProxyConnection: Hashable {
     private func readFromClient() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { self.cleanup(); return }
+            if error != nil { self.cleanup(); return }
             if let data = data, !data.isEmpty {
                 self.forwardToRemote(data)
             }
@@ -155,21 +175,15 @@ final class ProxyConnection: Hashable {
 
         let bytes = [UInt8](data)
         
-        // Если это TLS и сайт в списке - режем
-        if shouldFragment && TLSHelper.isTLSHello(bytes) {
-            // Ищем точку для разреза (внутри SNI)
-            var splitPoint = 1
-            if let sni = TLSHelper.findSNI(bytes) {
-                splitPoint = sni.start + (sni.end - sni.start) / 2
-            }
-            
-            // Если точка корректна - шлем двумя кусками
-            if splitPoint > 0 && splitPoint < data.count {
-                let part1 = data.subdata(in: 0..<splitPoint)
-                let part2 = data.subdata(in: splitPoint..<data.count)
+        // Режем ТОЛЬКО TLS ClientHello и ТОЛЬКО если домен в списке
+        if shouldFragment && isCONNECT && TLSHelper.isTLSHello(bytes) {
+            // Режем на 2 части: 1 байт + остальное (безопаснее чем середина SNI)
+            if data.count > 2 {
+                let part1 = data.subdata(in: 0..<1)
+                let part2 = data.subdata(in: 1..<data.count)
                 
                 remote.send(content: part1, completion: .contentProcessed { [weak self] _ in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.005) {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) {
                         self?.remote?.send(content: part2, completion: .contentProcessed { _ in })
                     }
                 })
@@ -177,14 +191,13 @@ final class ProxyConnection: Hashable {
             }
         }
         
-        // Иначе шлем как есть
         remote.send(content: data, completion: .contentProcessed { _ in })
     }
 
     private func readFromRemote() {
         remote?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { self.cleanup(); return }
+            if error != nil { self.cleanup(); return }
             if let data = data, !data.isEmpty {
                 self.connection.send(content: data, completion: .contentProcessed { _ in })
             }
@@ -206,35 +219,5 @@ final class ProxyConnection: Hashable {
 enum TLSHelper {
     static func isTLSHello(_ p: [UInt8]) -> Bool {
         return p.count > 44 && p[0] == 0x16 && p[1] == 3 && p[5] == 1
-    }
-    static func findSNI(_ p: [UInt8]) -> (host: String, start: Int, end: Int)? {
-        var i = 43
-        guard i < p.count else { return nil }
-        i += 1 + Int(p[i])
-        guard i + 2 <= p.count else { return nil }
-        let csLen = Int(p[i]) << 8 | Int(p[i + 1])
-        i += 2 + csLen
-        guard i + 1 <= p.count else { return nil }
-        i += 1 + Int(p[i])
-        guard i + 2 <= p.count else { return nil }
-        let extLen = Int(p[i]) << 8 | Int(p[i + 1])
-        i += 2
-        let extEnd = min(i + extLen, p.count)
-        while i + 4 <= extEnd {
-            let etype = Int(p[i]) << 8 | Int(p[i + 1])
-            let elen = Int(p[i + 2]) << 8 | Int(p[i + 3])
-            i += 4
-            if etype == 0 {
-                guard i + 5 <= p.count else { return nil }
-                let nl = Int(p[i + 3]) << 8 | Int(p[i + 4])
-                let s = i + 5
-                let e = s + nl
-                guard e <= p.count, nl > 0 else { return nil }
-                let host = String(bytes: p[s..<e], encoding: .ascii)?.lowercased() ?? ""
-                return (host, s, e)
-            }
-            i += elen
-        }
-        return nil
     }
 }
