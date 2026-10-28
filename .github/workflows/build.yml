@@ -1,47 +1,22 @@
 name: Build M1DPI iOS
-
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
-
+on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 30
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
-      - name: Build unsigned .app
-        run: |
-          xcodebuild -project M1DPI.xcodeproj \
-            -scheme M1DPI \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath ./build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
-
-      - name: Package IPA
-        run: |
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - run: |
+          xcodebuild -project M1DPI.xcodeproj -scheme M1DPI -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath ./build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - run: |
           mkdir -p ipa/Payload
           cp -R build/Build/Products/Release-iphoneos/M1DPI.app ipa/Payload/
           cd ipa && zip -qry ../M1DPI-unsigned.ipa Payload
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: M1DPI-unsigned
           path: M1DPI-unsigned.ipa
-          retention-days: 30
