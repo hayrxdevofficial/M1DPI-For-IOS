@@ -6,6 +6,7 @@ class ProxyServer: ObservableObject {
     private let port: UInt16 = 8888
     private let queue = DispatchQueue(label: "proxy.listener")
     private var activeConnections: Set<ProxyConnection> = []
+    private let config = Config.shared
 
     func start() throws {
         let params = NWParameters.tcp
@@ -13,7 +14,7 @@ class ProxyServer: ObservableObject {
         let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         l.newConnectionHandler = { [weak self] conn in
             guard let self = self else { return }
-            let pc = ProxyConnection(connection: conn)
+            let pc = ProxyConnection(connection: conn, config: self.config)
             pc.server = self
             self.activeConnections.insert(pc)
             pc.start()
@@ -36,15 +37,18 @@ class ProxyServer: ObservableObject {
 
 final class ProxyConnection: Hashable {
     let connection: NWConnection
+    let config: Config
     weak var server: ProxyServer?
     private let queue = DispatchQueue(label: "proxy.conn")
     private var remote: NWConnection?
     private var headerBuffer = Data()
     private var targetHost = ""
     private var targetPort: UInt16 = 443
+    private var shouldFragment = false
 
-    init(connection: NWConnection) {
+    init(connection: NWConnection, config: Config) {
         self.connection = connection
+        self.config = config
     }
     
     static func == (lhs: ProxyConnection, rhs: ProxyConnection) -> Bool { lhs === rhs }
@@ -62,7 +66,7 @@ final class ProxyConnection: Hashable {
     private func readHeader() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { print(error); self.cleanup(); return }
+            if let error = error { self.cleanup(); return }
             if let data = data { self.headerBuffer.append(data) }
             if let headerEnd = self.findHeaderEnd(self.headerBuffer) {
                 let header = self.headerBuffer[..<headerEnd]
@@ -92,6 +96,9 @@ final class ProxyConnection: Hashable {
             let hp = target.split(separator: ":")
             targetHost = hp.first.map(String.init) ?? target
             if hp.count > 1 { targetPort = UInt16(hp[1]) ?? 443 }
+
+            // Проверяем, нужно ли резать этот сайт
+            shouldFragment = config.domainHit(targetHost)
 
             guard connectRemote() else { cleanup(); return }
 
@@ -134,7 +141,7 @@ final class ProxyConnection: Hashable {
     private func readFromClient() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { print(error); self.cleanup(); return }
+            if let error = error { self.cleanup(); return }
             if let data = data, !data.isEmpty {
                 self.forwardToRemote(data)
             }
@@ -147,33 +154,37 @@ final class ProxyConnection: Hashable {
         guard let remote = remote else { return }
 
         let bytes = [UInt8](data)
-        if TLSHelper.isTLSHello(bytes), let sni = TLSHelper.findSNI(bytes) {
-            var points: [Int] = [1]
-            points.append(sni.start + max(1, (sni.end - sni.start) / 2))
-            points = Array(Set(points.filter { $0 > 0 && $0 < data.count })).sorted()
-
-            let bounds = [0] + points + [data.count]
-            let segments = (0..<(bounds.count - 1)).map { data.subdata(in: bounds[$0]..<bounds[$0 + 1]) }
-            
-            sendSegments(segments, to: remote, index: 0)
-        } else {
-            remote.send(content: data, completion: .contentProcessed { _ in })
-        }
-    }
-
-    private func sendSegments(_ segments: [Data], to conn: NWConnection, index: Int) {
-        guard index < segments.count else { return }
-        conn.send(content: segments[index], completion: .contentProcessed { [weak self] _ in
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.005) {
-                self?.sendSegments(segments, to: conn, index: index + 1)
+        
+        // Если это TLS и сайт в списке - режем
+        if shouldFragment && TLSHelper.isTLSHello(bytes) {
+            // Ищем точку для разреза (внутри SNI)
+            var splitPoint = 1
+            if let sni = TLSHelper.findSNI(bytes) {
+                splitPoint = sni.start + (sni.end - sni.start) / 2
             }
-        })
+            
+            // Если точка корректна - шлем двумя кусками
+            if splitPoint > 0 && splitPoint < data.count {
+                let part1 = data.subdata(in: 0..<splitPoint)
+                let part2 = data.subdata(in: splitPoint..<data.count)
+                
+                remote.send(content: part1, completion: .contentProcessed { [weak self] _ in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.005) {
+                        self?.remote?.send(content: part2, completion: .contentProcessed { _ in })
+                    }
+                })
+                return
+            }
+        }
+        
+        // Иначе шлем как есть
+        remote.send(content: data, completion: .contentProcessed { _ in })
     }
 
     private func readFromRemote() {
         remote?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error { print(error); self.cleanup(); return }
+            if let error = error { self.cleanup(); return }
             if let data = data, !data.isEmpty {
                 self.connection.send(content: data, completion: .contentProcessed { _ in })
             }

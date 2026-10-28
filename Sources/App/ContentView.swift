@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var server = ProxyServer()
     @State private var isRunning = false
+    @ObservedObject var config = Config.shared
 
     var body: some View {
         TabView {
