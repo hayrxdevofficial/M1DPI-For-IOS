@@ -8,25 +8,27 @@ struct SettingsView: View {
             Form {
                 Section("Фрагментация TLS") {
                     Toggle("Отдельный байт первым", isOn: $config.splitFirstByte)
-                        .onChange(of: config.splitFirstByte) { _, _ in config.save() }
+                        .onChange(of: config.splitFirstByte) { _ in config.save() }
                     Toggle("Разрезать внутри SNI", isOn: $config.splitInSNI)
-                        .onChange(of: config.splitInSNI) { _, _ in config.save() }
+                        .onChange(of: config.splitInSNI) { _ in config.save() }
                     Toggle("Фрагментировать без SNI", isOn: $config.fragmentUnknownSNI)
-                        .onChange(of: config.fragmentUnknownSNI) { _, _ in config.save() }
+                        .onChange(of: config.fragmentUnknownSNI) { _ in config.save() }
                     Stepper("Задержка: \(config.delayMs) мс",
                             value: $config.delayMs, in: 0...100, step: 1)
-                        .onChange(of: config.delayMs) { _, _ in config.save() }
+                        .onChange(of: config.delayMs) { _ in config.save() }
                 }
 
-                Section("QUIC") {
+                Section {
                     Picker("Режим", selection: $config.quicMode) {
                         Text("All (весь UDP/443)").tag("all")
                         Text("Только из списка").tag("list")
                         Text("Отключено").tag("off")
                     }
-                    .onChange(of: config.quicMode) { _, _ in config.save() }
+                    .onChange(of: config.quicMode) { _ in config.save() }
+                } header: {
+                    Text("QUIC")
                 } footer: {
-                    Text("При использовании прокси браузеры и так не применяют QUIC. Настройка сохранена для совместимости.")
+                    Text("При использовании прокси браузеры и так не применяют QUIC.")
                 }
 
                 Section("О приложении") {
