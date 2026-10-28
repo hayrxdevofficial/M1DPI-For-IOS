@@ -16,9 +16,9 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: Sources/App
+      - path: Sources          # <-- ИСПРАВЛЕНО (было Sources/App)
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.m1dpi
-        INFOPLIST_FILE: Sources/App/Info.plist
+        INFOPLIST_FILE: Sources/Info.plist  # <-- ИСПРАВЛЕНО (было Sources/App/Info.plist)
         GENERATE_INFOPLIST_FILE: "NO"
