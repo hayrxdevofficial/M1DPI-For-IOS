@@ -24,6 +24,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.m1dpi
         INFOPLIST_FILE: Sources/App/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/App/M1DPI.entitlements
+        GENERATE_INFOPLIST_FILE: "NO"          # ← ДОБАВИТЬ
     dependencies:
       - target: M1DPIExtension
         embed: true
@@ -39,5 +40,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.m1dpi.extension
         INFOPLIST_FILE: Sources/Extension/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Extension/M1DPIExtension.entitlements
+        GENERATE_INFOPLIST_FILE: "NO"          # ← ДОБАВИТЬ
     dependencies:
       - sdk: NetworkExtension.framework
