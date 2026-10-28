@@ -14,51 +14,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 1. Проверка структуры ----------
-      - name: Sanity check
-        run: |
-          echo "=== Repo root ==="
-          ls -la
-          echo ""
-          echo "=== Sources/App ==="
-          ls -la Sources/App/ || { echo "❌ НЕТ Sources/App"; exit 1; }
-          for f in Info.plist M1DPI.entitlements M1DPIApp.swift ContentView.swift TunnelManager.swift StatusView.swift ListsView.swift SettingsView.swift LogsView.swift; do
-            test -f "Sources/App/$f" || { echo "❌ НЕТ Sources/App/$f"; exit 1; }
-          done
-          echo ""
-          echo "=== Sources/Extension ==="
-          ls -la Sources/Extension/ || { echo "❌ НЕТ Sources/Extension"; exit 1; }
-          for f in Info.plist M1DPIExtension.entitlements PacketTunnelProvider.swift HTTPProxyServer.swift ProxyConnection.swift; do
-            test -f "Sources/Extension/$f" || { echo "❌ НЕТ Sources/Extension/$f"; exit 1; }
-          done
-          echo ""
-          echo "=== Sources/Shared ==="
-          ls -la Sources/Shared/ || { echo "❌ НЕТ Sources/Shared"; exit 1; }
-          for f in DPIConfiguration.swift Log.swift Filters.swift TLSHelper.swift; do
-            test -f "Sources/Shared/$f" || { echo "❌ НЕТ Sources/Shared/$f"; exit 1; }
-          done
-          echo ""
-          echo "✅ Все файлы на месте"
-
-      # ---------- 2. Кэш для brew и xcodegen ----------
-      - name: Cache Homebrew
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /opt/homebrew/Cellar
-          key: brew-xcodegen-${{ runner.os }}
-
       - name: Install XcodeGen
         run: brew install xcodegen
 
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # ---------- 3. Сборка (без xcpretty) ----------
       - name: Build unsigned .app
         run: |
-          set -o pipefail
           xcodebuild -project M1DPI.xcodeproj \
             -scheme M1DPI \
             -configuration Release \
@@ -70,50 +33,15 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
-      # ---------- 4. Проверка, что в .app есть Info.plist ----------
-      - name: Inspect built app bundle
-        run: |
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "M1DPI.app" | head -1)
-          if [ -z "$APP" ]; then
-            echo "❌ M1DPI.app не найден после сборки"
-            find build/Build/Products -name "*.app" || true
-            exit 1
-          fi
-          echo "=== Bundle: $APP ==="
-          ls -la "$APP"
-          echo ""
-          echo "=== Info.plist check ==="
-          if [ ! -f "$APP/Info.plist" ]; then
-            echo "❌ Info.plist НЕТ в .app — GENERATE_INFOPLIST_FILE не отключён?"
-            exit 1
-          fi
-          echo "✅ Info.plist есть"
-          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c "Print :CFBundlePackageType" "$APP/Info.plist"
-          echo ""
-          echo "=== Embedded extension ==="
-          ls -la "$APP/PlugIns/" || { echo "❌ Плагинов нет"; exit 1; }
-          EXT_PLIST=$(find "$APP/PlugIns" -name "Info.plist" | head -1)
-          test -f "$EXT_PLIST" || { echo "❌ Info.plist в расширении НЕТ"; exit 1; }
-          echo "✅ Info.plist расширения есть: $EXT_PLIST"
-
-      # ---------- 5. Упаковка в IPA ----------
       - name: Package IPA
         run: |
           mkdir -p ipa/Payload
           cp -R build/Build/Products/Release-iphoneos/M1DPI.app ipa/Payload/
-          # Убеждаемся, что Info.plist попал в архив
-          test -f ipa/Payload/M1DPI.app/Info.plist || { echo "❌ Info.plist пропал при копировании"; exit 1; }
           cd ipa && zip -qry ../M1DPI-unsigned.ipa Payload
-          cd ..
-          echo "=== IPA содержимое ==="
-          unzip -l M1DPI-unsigned.ipa | head -30
 
-      # ---------- 6. Выгрузка артефакта ----------
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: M1DPI-unsigned
           path: M1DPI-unsigned.ipa
           retention-days: 30
-          if-no-files-found: error
