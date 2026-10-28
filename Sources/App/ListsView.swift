@@ -10,7 +10,7 @@ struct ListsView: View {
             Form {
                 Section {
                     Toggle("Режим ALL (весь HTTPS)", isOn: $config.modeAll)
-                        .onChange(of: config.modeAll) { _, _ in config.save() }
+                        .onChange(of: config.modeAll) { _ in config.save() }
                 } footer: {
                     Text("Если включено — списки игнорируются, обрабатывается весь HTTPS-трафик.")
                 }
